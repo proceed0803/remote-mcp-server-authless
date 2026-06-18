@@ -292,6 +292,144 @@ export class MyMCP extends McpAgent {
 				}
 			},
 		);
+
+		// --- start_thumbnail_job（proceed-thumbnail /start を代理実行・jobId即返し） ---
+		// 非同期版。生成完了まで待たず jobId を即返す＝Remote MCP timeout回避。
+		//   - gateway内蔵 THUMBNAIL_TOKEN で proceed-thumbnail に POST /start 代理実行
+		//   - 返却は ok/jobId/status/count のみ（dataUrl等は返さない）
+		this.server.registerTool(
+			"start_thumbnail_job",
+			{
+				inputSchema: {
+					prompt: z.string(),
+					count: z.number().optional(),
+				},
+			},
+			async ({ prompt, count }) => {
+				const env = this.env as any;
+				const n = Math.min(Math.max(Math.floor(count ?? 2), 1), 2);
+
+				try {
+					const r = await fetch(THUMB_BASE + "/start", {
+						method: "POST",
+						headers: {
+							"X-THUMBNAIL-TOKEN": env.THUMBNAIL_TOKEN || "",
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({ prompt, count: n }),
+					});
+					const data: any = await r.json().catch(() => ({}));
+
+					if (!r.ok || data.ok !== true) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify(
+										{ ok: false, status: r.status, error: data.error || "start failed" },
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify(
+									{ ok: true, jobId: data.jobId, status: data.status, count: data.count },
+									null,
+									2,
+								),
+							},
+						],
+					};
+				} catch (e) {
+					return {
+						content: [
+							{ type: "text", text: JSON.stringify({ ok: false, error: String(e) }, null, 2) },
+						],
+					};
+				}
+			},
+		);
+
+		// --- check_thumbnail_job（proceed-thumbnail /check を代理実行・軽量プレビュー透過） ---
+		// 生成状態を確認。done時のみ candidates[{index, previewDataUrl}] を返す。
+		//   - previewDataUrl は本体が縮小済み（~24KB・token非露出）なのでそのまま透過
+		//   - フルdataUrl・?token=付きURLは本体が返さない設計＝gatewayも透過で安全
+		this.server.registerTool(
+			"check_thumbnail_job",
+			{
+				inputSchema: {
+					jobId: z.string(),
+				},
+			},
+			async ({ jobId }) => {
+				const env = this.env as any;
+
+				try {
+					const r = await fetch(THUMB_BASE + "/check", {
+						method: "POST",
+						headers: {
+							"X-THUMBNAIL-TOKEN": env.THUMBNAIL_TOKEN || "",
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({ jobId }),
+					});
+					const data: any = await r.json().catch(() => ({}));
+
+					if (!r.ok || data.ok !== true) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify(
+										{ ok: false, status: r.status, error: data.error || "check failed", jobId },
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+
+					// candidates は {index, previewDataUrl} のみ透過（本体で軽量化・token非露出済み）
+					const candidates = (data.candidates || []).map((c: any) => ({
+						index: c.index,
+						previewDataUrl: c.previewDataUrl,
+					}));
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify(
+									{
+										ok: true,
+										jobId,
+										status: data.status, // pending | done | failed
+										candidates,
+										errors: data.errors,
+									},
+									null,
+									2,
+								),
+							},
+						],
+					};
+				} catch (e) {
+					return {
+						content: [
+							{ type: "text", text: JSON.stringify({ ok: false, error: String(e) }, null, 2) },
+						],
+					};
+				}
+			},
+		);
 	}
 }
 
