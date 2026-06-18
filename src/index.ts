@@ -61,9 +61,7 @@ export class MyMCP extends McpAgent {
 			},
 		);
 
-		// --- 追加: probe_workers（課金ゼロの到達＋認証プローブ・代理実行） ---
-		// ゲートウェイのSecret(UPLOAD_TOKEN / THUMBNAIL_TOKEN)を使い、両Workerへ
-		// 「到達」と「認証通過(必須フィールド不足で即400)」だけ確認。生成もアップも走らない＝課金ゼロ。
+		// --- probe_workers（課金ゼロの到達＋認証プローブ・代理実行） ---
 		this.server.registerTool(
 			"probe_workers",
 			{ inputSchema: {} },
@@ -71,7 +69,6 @@ export class MyMCP extends McpAgent {
 				const env = this.env as any;
 				const out: any = {};
 
-				// 1) upload-test 到達 (GET → 200 期待)
 				try {
 					const r = await fetch(UPLOAD_BASE + "/", { method: "GET" });
 					out.upload_get = { status: r.status };
@@ -79,7 +76,6 @@ export class MyMCP extends McpAgent {
 					out.upload_get = { error: String(e) };
 				}
 
-				// 2) upload-test 認証通過 (POST + 正規トークン + fileなし → 400 no file field 期待)
 				try {
 					const r = await fetch(UPLOAD_BASE + "/", {
 						method: "POST",
@@ -92,7 +88,6 @@ export class MyMCP extends McpAgent {
 					out.upload_auth = { error: String(e) };
 				}
 
-				// 3) thumbnail 到達 (GET → 405 POST only 期待)
 				try {
 					const r = await fetch(THUMB_BASE + "/", { method: "GET" });
 					out.thumb_get = { status: r.status };
@@ -100,7 +95,6 @@ export class MyMCP extends McpAgent {
 					out.thumb_get = { error: String(e) };
 				}
 
-				// 4) thumbnail 認証通過 (POST + 正規トークン + {} → 400 prompt required 期待)
 				try {
 					const r = await fetch(THUMB_BASE + "/", {
 						method: "POST",
@@ -132,6 +126,89 @@ export class MyMCP extends McpAgent {
 						{ type: "text", text: JSON.stringify({ summary, detail: out }, null, 2) },
 					],
 				};
+			},
+		);
+
+		// --- generate_thumbnail（proceed-thumbnail を代理実行・dataUrl返却・token非露出） ---
+		// D-1方針: スタッフ/Claude側にTHUMBNAIL_TOKENを出さない。
+		//   - gateway内蔵Secretで proceed-thumbnail に POST / 代理実行
+		//   - 候補確認のため dataUrl(base64) を返す
+		//   - token付きURL(?token=...)は絶対に返さない。url/keyは初期は返さない
+		this.server.registerTool(
+			"generate_thumbnail",
+			{
+				inputSchema: {
+					prompt: z.string(),
+					count: z.number().optional(),
+				},
+			},
+			async ({ prompt, count }) => {
+				const env = this.env as any;
+				const n = Math.min(Math.max(Math.floor(count ?? 2), 1), 2);
+
+				try {
+					const r = await fetch(THUMB_BASE + "/", {
+						method: "POST",
+						headers: {
+							"X-THUMBNAIL-TOKEN": env.THUMBNAIL_TOKEN || "",
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({ prompt, count: n }),
+					});
+					const data: any = await r.json().catch(() => ({}));
+
+					if (!r.ok || data.ok === false) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify(
+										{
+											ok: false,
+											status: r.status,
+											error: data.error || "thumbnail generation failed",
+											errors: data.details || data.errors,
+											jobId: data.jobId,
+										},
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+
+					// token付きURL/keyを除去し、dataUrlのみ候補として返す
+					const images = (data.images || []).map((im: any) => ({
+						index: im.index,
+						dataUrl: im.dataUrl,
+					}));
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify(
+									{
+										ok: true,
+										jobId: data.jobId,
+										count: data.count,
+										images,
+										errors: data.errors,
+									},
+									null,
+									2,
+								),
+							},
+						],
+					};
+				} catch (e) {
+					return {
+						content: [
+							{ type: "text", text: JSON.stringify({ ok: false, error: String(e) }, null, 2) },
+						],
+					};
+				}
 			},
 		);
 	}
