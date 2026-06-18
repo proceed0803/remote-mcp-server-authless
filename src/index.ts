@@ -211,6 +211,87 @@ export class MyMCP extends McpAgent {
 				}
 			},
 		);
+
+		// --- adopt_thumbnail（proceed-thumbnail /adopt を代理実行・token非露出） ---
+		// D-1方針: スタッフ/Claude側にTHUMBNAIL_TOKENを出さない。
+		//   - gateway内蔵Secretで proceed-thumbnail に POST /adopt 代理実行
+		//   - 採用index以外をR2から削除し、採用のみ残す
+		//   - 返却は ok/keptKey/deleted のみ。adopt応答の url(?token=付き) は絶対に返さない
+		this.server.registerTool(
+			"adopt_thumbnail",
+			{
+				inputSchema: {
+					jobId: z.string(),
+					index: z.number(),
+				},
+			},
+			async ({ jobId, index }) => {
+				const env = this.env as any;
+				const idx = Math.floor(index); // 本体が 1-based int を400で検証。ここは整数化のみ。
+
+				try {
+					const r = await fetch(THUMB_BASE + "/adopt", {
+						method: "POST",
+						headers: {
+							"X-THUMBNAIL-TOKEN": env.THUMBNAIL_TOKEN || "",
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({ jobId, index: idx }),
+					});
+					const data: any = await r.json().catch(() => ({}));
+
+					// 本体: 成功 {ok:true,jobId,index,keptKey,url,deleted} / 失敗 {error,...}
+					if (!r.ok || data.ok !== true || data.error) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify(
+										{
+											ok: false,
+											status: r.status,
+											error: data.error || "adopt failed",
+											keptKey: data.keptKey,     // 404時に本体が返す
+											available: data.available, // 404時に本体が返す
+											jobId,
+											index: idx,
+										},
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+
+					// token付きurl(data.url)は除去。ok/keptKey/deleted のみ返す。
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify(
+									{
+										ok: true,
+										jobId: data.jobId,
+										index: data.index,
+										keptKey: data.keptKey,
+										deleted: data.deleted,
+									},
+									null,
+									2,
+								),
+							},
+						],
+					};
+				} catch (e) {
+					return {
+						content: [
+							{ type: "text", text: JSON.stringify({ ok: false, error: String(e) }, null, 2) },
+						],
+					};
+				}
+			},
+		);
 	}
 }
 
