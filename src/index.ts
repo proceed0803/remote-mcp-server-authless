@@ -4,6 +4,8 @@
 // 変更点（2026-06-20・★のみ）:
 //   ★ check_thumbnail_job の返却を R2短命URL方式へ更新。
 //      previewDataUrl（base64）は返さず、proceed-thumbnail が発行する previewUrl / size / contentType を素通し。
+//      token値・base64は返さない。
+//   それ以外（既存ツール・既存ルート・Service Binding UPLOAD_SVC・/upload・create_upload_ticket）は現行正本のまま不変。
 // 必須バインディング: KV UPLOAD_TICKETS / Service UPLOAD_SVC→proceed-upload-test /
 //                    Secret THUMBNAIL_TOKEN・UPLOAD_TOKEN / (任意)Var GATEWAY_UPLOAD_URL
 
@@ -14,6 +16,7 @@ import { z } from "zod";
 const UPLOAD_BASE = "https://proceed-upload-test.cloud-taku.workers.dev";
 const THUMB_BASE = "https://proceed-thumbnail.cloud-taku.workers.dev";
 
+// Define our MCP agent with tools
 export class MyMCP extends McpAgent {
   server = new McpServer({
     name: "proceed-gateway",
@@ -21,6 +24,7 @@ export class MyMCP extends McpAgent {
   });
 
   async init() {
+    // Simple addition tool
     this.server.registerTool(
       "add",
       { inputSchema: { a: z.number(), b: z.number() } },
@@ -29,6 +33,7 @@ export class MyMCP extends McpAgent {
       }),
     );
 
+    // Calculator tool with multiple operations
     this.server.registerTool(
       "calculate",
       {
@@ -67,7 +72,7 @@ export class MyMCP extends McpAgent {
       },
     );
 
-    // --- probe_workers（課金ゼロの到達＋認証プローブ） ---
+    // --- probe_workers（課金ゼロの到達＋認証プローブ・代理実行） ---
     this.server.registerTool(
       "probe_workers",
       { inputSchema: {} },
@@ -135,7 +140,7 @@ export class MyMCP extends McpAgent {
       },
     );
 
-    // --- generate_thumbnail（同期・デバッグ用） ---
+    // --- generate_thumbnail（proceed-thumbnail を代理実行・dataUrl返却・token非露出／同期・デバッグ用） ---
     this.server.registerTool(
       "generate_thumbnail",
       {
@@ -207,7 +212,7 @@ export class MyMCP extends McpAgent {
       },
     );
 
-    // --- adopt_thumbnail ---
+    // --- adopt_thumbnail（proceed-thumbnail /adopt を代理実行・token非露出） ---
     this.server.registerTool(
       "adopt_thumbnail",
       {
@@ -276,7 +281,7 @@ export class MyMCP extends McpAgent {
       },
     );
 
-    // --- start_thumbnail_job（jobId即返し） ---
+    // --- start_thumbnail_job（proceed-thumbnail /start を代理実行・jobId即返し） ---
     this.server.registerTool(
       "start_thumbnail_job",
       {
@@ -337,7 +342,7 @@ export class MyMCP extends McpAgent {
       },
     );
 
-    // --- check_thumbnail_job ---
+    // --- check_thumbnail_job（proceed-thumbnail /check を代理実行） ---
     // ★R2短命URL方式：previewUrl / size / contentType を素通し。previewDataUrl（base64）・token値は返さない。
     this.server.registerTool(
       "check_thumbnail_job",
@@ -405,7 +410,8 @@ export class MyMCP extends McpAgent {
       },
     );
 
-    // --- upload_cover ---
+    // --- upload_cover（thumbnail採用フルを Notion ページのカバーに設定・token非露出） ---
+    // ① 内蔵 THUMBNAIL_TOKEN で /img からフルbytes取得 → ② 内蔵 UPLOAD_TOKEN で upload-test へ multipart(mode=cover)
     this.server.registerTool(
       "upload_cover",
       {
@@ -497,7 +503,7 @@ export class MyMCP extends McpAgent {
       },
     );
 
-    // --- create_upload_ticket（短命チケット発行・KV保管・UPLOAD_TOKEN非露出） ---
+    // --- create_upload_ticket（短命チケット発行・KV保管・用途固定／UPLOAD_TOKEN非露出） ---
     this.server.registerTool(
       "create_upload_ticket",
       {
@@ -576,6 +582,7 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
     if (t.anchorText) fd.append("anchorText", t.anchorText);
     if (t.deleteAnchor !== null && t.deleteAnchor !== undefined) fd.append("deleteAnchor", String(t.deleteAnchor));
     if (t.headingText) fd.append("headingText", t.headingText);
+    // Service Binding 経由（公開URL非経由・内部直結→1042回避）。無ければURL fetchフォールバック。
     const upReq = new Request(UPLOAD_BASE + "/", { method: "POST", headers: { "X-UPLOAD-TOKEN": env.UPLOAD_TOKEN || "" }, body: fd });
     const upRes = env.UPLOAD_SVC ? await env.UPLOAD_SVC.fetch(upReq) : await fetch(upReq);
     const up: any = await upRes.json().catch(() => ({}));
