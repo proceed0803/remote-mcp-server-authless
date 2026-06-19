@@ -28,6 +28,12 @@
 			"id": "2cea8bb60d854f06ad930cfb2c6320ab",
 		},
 	],
+	"services": [
+		{
+			"binding": "UPLOAD_SVC",
+			"service": "proceed-upload-test",
+		},
+	],
 	"observability": {
 		"enabled": true,
 	},
