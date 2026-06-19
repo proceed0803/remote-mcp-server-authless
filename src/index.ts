@@ -470,10 +470,13 @@ export class MyMCP extends McpAgent {
 						};
 					}
 					const bytes = new Uint8Array(await imgRes.arrayBuffer());
+					// 実体のContent-Typeに合わせる（thumbnailはJPEGを返すため image/png 固定は不整合）
+					const ctype = imgRes.headers.get("content-type") || "image/png";
+					const ext = ctype.includes("jpeg") || ctype.includes("jpg") ? "jpg" : "png";
 
 					// ② proceed-upload-test へ multipart 中継（内蔵 UPLOAD_TOKEN・mode=cover）
 					const fd = new FormData();
-					fd.append("file", new Blob([bytes], { type: "image/png" }), `${jobId}_${idx}.png`);
+					fd.append("file", new Blob([bytes], { type: ctype }), `${jobId}_${idx}.${ext}`);
 					fd.append("pageId", pageId);
 					fd.append("mode", "cover");
 
