@@ -565,7 +565,8 @@ export class MyMCP extends McpAgent {
 	}
 }
 
-// --- /upload: チケット検証 → 内蔵UPLOAD_TOKENで upload-test 代理 → 軽量JSON返却 ---
+// --- /upload: チケット検証 → Service Binding経由で upload-test 代理 → 軽量JSON返却 ---
+// ★ Service Binding(UPLOAD_SVC)で内部直結し error code:1042 を回避。env.UPLOAD_SVC が無い時はURL fetchにフォールバック。
 // ★ 現在 _debug 計測版（原因確定後に _debug ブロックを削除して軽量JSONへ戻す）
 async function handleUpload(request: Request, env: any): Promise<Response> {
 	const j = (obj: any, status = 200) =>
@@ -619,11 +620,14 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
 		if (t.deleteAnchor !== null && t.deleteAnchor !== undefined) fd.append("deleteAnchor", String(t.deleteAnchor));
 		if (t.headingText) fd.append("headingText", t.headingText);
 
-		const upRes = await fetch(UPLOAD_BASE + "/", {
+		// ★ Service Binding 経由（公開URLを経由せず内部直結 → 1042回避）。無ければURL fetchにフォールバック。
+		const upReq = new Request(UPLOAD_BASE + "/", {
 			method: "POST",
 			headers: { "X-UPLOAD-TOKEN": env.UPLOAD_TOKEN || "" },
 			body: fd,
 		});
+		const upRes = env.UPLOAD_SVC ? await env.UPLOAD_SVC.fetch(upReq) : await fetch(upReq);
+
 		const upText = await upRes.text();
 		let up: any = {};
 		try { up = JSON.parse(upText); } catch {}
@@ -645,6 +649,7 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
 						notion_message: (nb.message || "").slice(0, 300),
 						upload_base: UPLOAD_BASE,
 						token_present: !!env.UPLOAD_TOKEN,
+						svc_binding: !!env.UPLOAD_SVC,
 						sent_type: fileType,
 						sent_size: fileSize,
 					},
