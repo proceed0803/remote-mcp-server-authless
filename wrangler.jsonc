@@ -22,6 +22,12 @@
 			},
 		],
 	},
+	"kv_namespaces": [
+		{
+			"binding": "UPLOAD_TICKETS",
+			"id": "2cea8bb60d854f06ad930cfb2c6320ab",
+		},
+	],
 	"observability": {
 		"enabled": true,
 	},
