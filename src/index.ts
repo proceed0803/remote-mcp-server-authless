@@ -566,8 +566,7 @@ export class MyMCP extends McpAgent {
 }
 
 // --- /upload: チケット検証 → Service Binding経由で upload-test 代理 → 軽量JSON返却 ---
-// ★ Service Binding(UPLOAD_SVC)で内部直結し error code:1042 を回避。env.UPLOAD_SVC が無い時はURL fetchにフォールバック。
-// ★ 現在 _debug 計測版（原因確定後に _debug ブロックを削除して軽量JSONへ戻す）
+// Service Binding(UPLOAD_SVC)で内部直結し error code:1042 を回避。env.UPLOAD_SVC が無い時はURL fetchにフォールバック。
 async function handleUpload(request: Request, env: any): Promise<Response> {
 	const j = (obj: any, status = 200) =>
 		new Response(JSON.stringify(obj, null, 2), {
@@ -620,7 +619,7 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
 		if (t.deleteAnchor !== null && t.deleteAnchor !== undefined) fd.append("deleteAnchor", String(t.deleteAnchor));
 		if (t.headingText) fd.append("headingText", t.headingText);
 
-		// ★ Service Binding 経由（公開URLを経由せず内部直結 → 1042回避）。無ければURL fetchにフォールバック。
+		// Service Binding 経由（公開URLを経由せず内部直結 → 1042回避）。無ければURL fetchにフォールバック。
 		const upReq = new Request(UPLOAD_BASE + "/", {
 			method: "POST",
 			headers: { "X-UPLOAD-TOKEN": env.UPLOAD_TOKEN || "" },
@@ -628,12 +627,9 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
 		});
 		const upRes = env.UPLOAD_SVC ? await env.UPLOAD_SVC.fetch(upReq) : await fetch(upReq);
 
-		const upText = await upRes.text();
-		let up: any = {};
-		try { up = JSON.parse(upText); } catch {}
+		const up: any = await upRes.json().catch(() => ({}));
 
 		if (!upRes.ok || up.ok !== true) {
-			const nb = (up && up.body) || {};
 			return j(
 				{
 					ok: false,
@@ -641,18 +637,6 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
 					status: upRes.status,
 					error: up.error || "upload failed",
 					detail: up.step ? { step: up.step } : undefined,
-					_debug: {
-						upstream_status: upRes.status,
-						upstream_step: up.step ?? null,
-						upstream_body: upText.slice(0, 800),
-						notion_code: nb.code ?? null,
-						notion_message: (nb.message || "").slice(0, 300),
-						upload_base: UPLOAD_BASE,
-						token_present: !!env.UPLOAD_TOKEN,
-						svc_binding: !!env.UPLOAD_SVC,
-						sent_type: fileType,
-						sent_size: fileSize,
-					},
 				},
 				502,
 			);
