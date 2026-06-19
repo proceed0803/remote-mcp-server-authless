@@ -430,6 +430,104 @@ export class MyMCP extends McpAgent {
 				}
 			},
 		);
+
+		// --- upload_cover（thumbnail採用フルを Notion ページのカバーに設定・token非露出） ---
+		// 生成→採用後のフル（thumb/{jobId}/{index}.png）を Notion ページカバーに。
+		//   ① gateway内蔵 THUMBNAIL_TOKEN で proceed-thumbnail の /img からフルbytes取得
+		//   ② gateway内蔵 UPLOAD_TOKEN で proceed-upload-test へ multipart(mode=cover) 代理POST
+		//   - 画像ソースはR2内なので base64 を Claude/スタッフに通さない（難所回避）
+		//   - token（THUMBNAIL/UPLOAD）は一切返さない
+		this.server.registerTool(
+			"upload_cover",
+			{
+				inputSchema: {
+					jobId: z.string(),
+					index: z.number(),
+					pageId: z.string(),
+				},
+			},
+			async ({ jobId, index, pageId }) => {
+				const env = this.env as any;
+				const idx = Math.floor(index);
+
+				try {
+					// ① thumbnail から採用フルを bytes 取得（内蔵 THUMBNAIL_TOKEN・ヘッダ認証）
+					const imgRes = await fetch(`${THUMB_BASE}/img/${jobId}/${idx}.png`, {
+						headers: { "X-THUMBNAIL-TOKEN": env.THUMBNAIL_TOKEN || "" },
+					});
+					if (!imgRes.ok) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify(
+										{ ok: false, step: "fetch_full", status: imgRes.status, error: "full image not found (adopt済みか確認)", jobId, index: idx },
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+					const bytes = new Uint8Array(await imgRes.arrayBuffer());
+
+					// ② proceed-upload-test へ multipart 中継（内蔵 UPLOAD_TOKEN・mode=cover）
+					const fd = new FormData();
+					fd.append("file", new Blob([bytes], { type: "image/png" }), `${jobId}_${idx}.png`);
+					fd.append("pageId", pageId);
+					fd.append("mode", "cover");
+
+					const upRes = await fetch(UPLOAD_BASE + "/", {
+						method: "POST",
+						headers: { "X-UPLOAD-TOKEN": env.UPLOAD_TOKEN || "" },
+						body: fd,
+					});
+					const upData: any = await upRes.json().catch(() => ({}));
+
+					if (!upRes.ok || upData.ok !== true) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: JSON.stringify(
+										{
+											ok: false,
+											step: "upload_cover",
+											status: upRes.status,
+											error: upData.error || "cover set failed",
+											detail: upData.step ? { step: upData.step, body: upData.body } : undefined,
+											pageId,
+										},
+										null,
+										2,
+									),
+								},
+							],
+						};
+					}
+
+					// token非露出。ok/attached/pageId/size のみ返す。
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify(
+									{ ok: true, attached: upData.attached || "page cover", pageId, mode: "cover", size: upData.size },
+									null,
+									2,
+								),
+							},
+						],
+					};
+				} catch (e) {
+					return {
+						content: [
+							{ type: "text", text: JSON.stringify({ ok: false, error: String(e) }, null, 2) },
+						],
+					};
+				}
+			},
+		);
 	}
 }
 
