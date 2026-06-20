@@ -15,6 +15,7 @@ import { z } from "zod";
 
 const UPLOAD_BASE = "https://proceed-upload-test.cloud-taku.workers.dev";
 const THUMB_BASE = "https://proceed-thumbnail.cloud-taku.workers.dev";
+const THUMB_REF_TYPES = ["image/png", "image/jpeg", "image/webp"]; // ★J: thumb_ref専用allowlist（共有IMAGE_TYPESと分離）
 
 // Define our MCP agent with tools
 export class MyMCP extends McpAgent {
@@ -288,9 +289,10 @@ export class MyMCP extends McpAgent {
         inputSchema: {
           prompt: z.string(),
           count: z.number().optional(),
+          imageKey: z.string().optional(),       // ★J: B案=参照画像のrefKey
         },
       },
-      async ({ prompt, count }) => {
+      async ({ prompt, count, imageKey }) => {
         const env = this.env as any;
         const n = Math.min(Math.max(Math.floor(count ?? 2), 1), 2);
 
@@ -301,7 +303,7 @@ export class MyMCP extends McpAgent {
               "X-THUMBNAIL-TOKEN": env.THUMBNAIL_TOKEN || "",
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({ prompt, count: n }),
+            body: JSON.stringify({ prompt, count: n, ...(imageKey ? { imageKey } : {}) }), // ★J
           });
           const data: any = await r.json().catch(() => ({}));
 
@@ -510,8 +512,8 @@ export class MyMCP extends McpAgent {
         inputSchema: {
           fileName: z.string(),
           contentType: z.string(),
-          pageId: z.string(),
-          mode: z.enum(["image", "file"]).optional(),
+          pageId: z.string().optional(),                       // ★J: thumb_refでは不要
+          mode: z.enum(["image", "file", "thumb_ref"]).optional(),
           placement: z.enum(["top", "bottom"]).optional(),
           anchorText: z.string().optional(),
           deleteAnchor: z.boolean().optional(),
@@ -526,8 +528,9 @@ export class MyMCP extends McpAgent {
         const FILE_TYPES = ["application/pdf"];
         const m = mode ?? "image";
         const ct = (contentType || "").toLowerCase();
-        if (m !== "image" && m !== "file") return j({ ok: false, reason: "mode_not_allowed" });
-        const allowed = m === "file" ? FILE_TYPES : IMAGE_TYPES;
+        if (m !== "image" && m !== "file" && m !== "thumb_ref") return j({ ok: false, reason: "mode_not_allowed" });
+        if ((m === "image" || m === "file") && !pageId) return j({ ok: false, reason: "pageId_required" }); // ★J: 既存は従来通りpageId必須
+        const allowed = m === "file" ? FILE_TYPES : (m === "thumb_ref" ? THUMB_REF_TYPES : IMAGE_TYPES);
         if (!allowed.includes(ct)) return j({ ok: false, reason: "mode_content_type_mismatch" });
         const ticketId = crypto.randomUUID();
         const ttl = 120;
@@ -563,7 +566,28 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
     if (Date.now() > t.exp) return j({ ok: false, error: "ticket_expired" }, 401);
     await env.UPLOAD_TICKETS.put(ticketId, JSON.stringify({ ...t, used: true }), { expirationTtl: 120 });
     const mode = t.mode || "image";
-    if (mode !== "image" && mode !== "file") return j({ ok: false, reason: "mode_not_allowed" }, 400);
+    if (mode !== "image" && mode !== "file" && mode !== "thumb_ref") return j({ ok: false, reason: "mode_not_allowed" }, 400);
+
+    // ★J: thumb_ref＝参照画像を proceed-thumbnail /refupload へ転送し imageKey を返す（upload-test非経由・早期return／formDataは1回だけ）
+    if (mode === "thumb_ref") {
+      const form0 = await request.formData();
+      const f = form0.get("file");
+      if (!f || typeof f === "string") return j({ ok: false, error: "no file field" }, 400);
+      const ft = ((f as File).type || "").toLowerCase();
+      if (!THUMB_REF_TYPES.includes(ft)) return j({ ok: false, reason: "mode_content_type_mismatch" }, 400);
+      if (t.contentType && t.contentType !== ft) return j({ ok: false, reason: "content_type_mismatch" }, 400);
+      if (((f as File).size ?? 0) > 5 * 1024 * 1024) return j({ ok: false, reason: "file_too_large" }, 400);
+      const buf = await (f as File).arrayBuffer();
+      const rr = await fetch(THUMB_BASE + "/refupload", {
+        method: "POST",
+        headers: { "X-THUMBNAIL-TOKEN": env.THUMBNAIL_TOKEN || "", "Content-Type": ft },
+        body: buf,
+      });
+      const rd: any = await rr.json().catch(() => ({}));
+      if (!rr.ok || rd.ok !== true) return j({ ok: false, step: "refupload", status: rr.status, error: rd.error || "refupload failed" }, 502);
+      return j({ ok: true, imageKey: rd.imageKey, size: rd.size, contentType: rd.contentType });
+    }
+
     const form = await request.formData();
     const file = form.get("file");
     if (!file || typeof file === "string") return j({ ok: false, error: "no file field" }, 400);
