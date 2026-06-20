@@ -578,14 +578,18 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
       if (t.contentType && t.contentType !== ft) return j({ ok: false, reason: "content_type_mismatch" }, 400);
       if (((f as File).size ?? 0) > 5 * 1024 * 1024) return j({ ok: false, reason: "file_too_large" }, 400);
       const buf = await (f as File).arrayBuffer();
-      const rr = await fetch(THUMB_BASE + "/refupload", {
+      const refReq = new Request(THUMB_BASE + "/refupload", {
         method: "POST",
         headers: { "X-THUMBNAIL-TOKEN": env.THUMBNAIL_TOKEN || "", "Content-Type": ft },
         body: buf,
       });
-      const rd: any = await rr.json().catch(() => ({}));
-      if (!rr.ok || rd.ok !== true) return j({ ok: false, step: "refupload", status: rr.status, error: rd.error || "refupload failed" }, 502);
-      return j({ ok: true, imageKey: rd.imageKey, size: rd.size, contentType: rd.contentType });
+      // ★既存/uploadと同じ作法：Service Binding優先・公開fetchはfallback（Worker間転送404対策）
+      const rr = env.THUMB_SVC ? await env.THUMB_SVC.fetch(refReq) : await fetch(refReq);
+      const via = env.THUMB_SVC ? "service_binding" : "public_fetch";
+      const rtext = await rr.text();                       // ★診断: 失敗時に上流ボディを見る
+      let rd: any = {}; try { rd = JSON.parse(rtext); } catch {}
+      if (!rr.ok || rd.ok !== true) return j({ ok: false, step: "refupload", status: rr.status, error: rd.error || "refupload failed", via, upstreamBody: rtext.slice(0, 300) }, 502);
+      return j({ ok: true, imageKey: rd.imageKey, size: rd.size, contentType: rd.contentType, via });
     }
 
     const form = await request.formData();
