@@ -33,6 +33,10 @@
 			"binding": "UPLOAD_SVC",
 			"service": "proceed-upload-test",
 		},
+		{
+			"binding": "THUMB_SVC",
+			"service": "proceed-thumbnail",
+		},
 	],
 	"observability": {
 		"enabled": true,
