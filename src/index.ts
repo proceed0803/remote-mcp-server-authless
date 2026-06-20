@@ -5,7 +5,12 @@
 //   ★ check_thumbnail_job の返却を R2短命URL方式へ更新。
 //      previewDataUrl（base64）は返さず、proceed-thumbnail が発行する previewUrl / size / contentType を素通し。
 //      token値・base64は返さない。
-//   それ以外（既存ツール・既存ルート・Service Binding UPLOAD_SVC・/upload・create_upload_ticket）は現行正本のまま不変。
+//   ★cover（2026-06-20追加・案Yカバー経路）:
+//      create_upload_ticket の mode enum に "cover" を追加。cover は pageId 必須・画像のみ。
+//      handleUpload で mode==="cover" を許可。thumb_ref のような早期returnにせず、
+//      既存 image/file と同じ通常FormData経路で fd.append("mode","cover") して UPLOAD_SVC(proceed-upload-test) へ転送。
+//      ★GatewayでNotion File Upload APIは新設しない。カバー設定は proceed-upload-test 側の既存cover処理が担う。
+//   それ以外（既存ツール・既存ルート・Service Binding UPLOAD_SVC・/upload）は現行正本のまま不変。
 // 必須バインディング: KV UPLOAD_TICKETS / Service UPLOAD_SVC→proceed-upload-test /
 //                    Secret THUMBNAIL_TOKEN・UPLOAD_TOKEN / (任意)Var GATEWAY_UPLOAD_URL
 
@@ -512,8 +517,8 @@ export class MyMCP extends McpAgent {
         inputSchema: {
           fileName: z.string(),
           contentType: z.string(),
-          pageId: z.string().optional(),                       // ★J: thumb_refでは不要
-          mode: z.enum(["image", "file", "thumb_ref"]).optional(),
+          pageId: z.string().optional(),                       // ★J: thumb_refでは不要 / ★cover: 必須(下のガードで担保)
+          mode: z.enum(["image", "file", "thumb_ref", "cover"]).optional(), // ★cover追加
           placement: z.enum(["top", "bottom"]).optional(),
           anchorText: z.string().optional(),
           deleteAnchor: z.boolean().optional(),
@@ -528,9 +533,9 @@ export class MyMCP extends McpAgent {
         const FILE_TYPES = ["application/pdf"];
         const m = mode ?? "image";
         const ct = (contentType || "").toLowerCase();
-        if (m !== "image" && m !== "file" && m !== "thumb_ref") return j({ ok: false, reason: "mode_not_allowed" });
-        if ((m === "image" || m === "file") && !pageId) return j({ ok: false, reason: "pageId_required" }); // ★J: 既存は従来通りpageId必須
-        const allowed = m === "file" ? FILE_TYPES : (m === "thumb_ref" ? THUMB_REF_TYPES : IMAGE_TYPES);
+        if (m !== "image" && m !== "file" && m !== "thumb_ref" && m !== "cover") return j({ ok: false, reason: "mode_not_allowed" }); // ★cover許可
+        if ((m === "image" || m === "file" || m === "cover") && !pageId) return j({ ok: false, reason: "pageId_required" }); // ★cover: image/file/cover はpageId必須・thumb_refのみ不要
+        const allowed = m === "file" ? FILE_TYPES : (m === "thumb_ref" ? THUMB_REF_TYPES : IMAGE_TYPES); // ★cover→else=IMAGE_TYPES(png/jpeg/webp)で画像許可
         if (!allowed.includes(ct)) return j({ ok: false, reason: "mode_content_type_mismatch" });
         const ticketId = crypto.randomUUID();
         const ttl = 120;
@@ -566,7 +571,7 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
     if (Date.now() > t.exp) return j({ ok: false, error: "ticket_expired" }, 401);
     await env.UPLOAD_TICKETS.put(ticketId, JSON.stringify({ ...t, used: true }), { expirationTtl: 120 });
     const mode = t.mode || "image";
-    if (mode !== "image" && mode !== "file" && mode !== "thumb_ref") return j({ ok: false, reason: "mode_not_allowed" }, 400);
+    if (mode !== "image" && mode !== "file" && mode !== "thumb_ref" && mode !== "cover") return j({ ok: false, reason: "mode_not_allowed" }, 400); // ★cover許可
 
     // ★J: thumb_ref＝参照画像を proceed-thumbnail /refupload へ転送し imageKey を返す（upload-test非経由・早期return／formDataは1回だけ）
     if (mode === "thumb_ref") {
@@ -592,20 +597,21 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
       return j({ ok: true, imageKey: rd.imageKey, size: rd.size, contentType: rd.contentType, via });
     }
 
+    // ★cover は thumb_ref のような早期returnにせず、ここから先の通常 image/file 経路に乗せる（mode==="cover" は allowed=IMAGE_TYPES）
     const form = await request.formData();
     const file = form.get("file");
     if (!file || typeof file === "string") return j({ ok: false, error: "no file field" }, 400);
     const fileType = ((file as File).type || "").toLowerCase();
     const fileSize = (file as File).size ?? 0;
     if (!fileType) return j({ ok: false, reason: "content_type_missing" }, 400);
-    const allowed = mode === "file" ? FILE_TYPES : IMAGE_TYPES;
+    const allowed = mode === "file" ? FILE_TYPES : IMAGE_TYPES; // ★cover も image/thumb_ref と同じく IMAGE_TYPES 側
     if (!allowed.includes(fileType)) return j({ ok: false, reason: "mode_content_type_mismatch" }, 400);
     if (t.contentType && t.contentType !== fileType) return j({ ok: false, reason: "content_type_mismatch" }, 400);
     if (fileSize > MAX_SIZE) return j({ ok: false, reason: "file_too_large" }, 400);
     const fd = new FormData();
     fd.append("file", file, (file as File).name || t.fileName || "upload.bin");
     fd.append("pageId", t.pageId);
-    fd.append("mode", mode);
+    fd.append("mode", mode); // ★cover はここで "cover" が proceed-upload-test へ転送される
     if (t.placement) fd.append("placement", t.placement);
     if (t.anchorText) fd.append("anchorText", t.anchorText);
     if (t.deleteAnchor !== null && t.deleteAnchor !== undefined) fd.append("deleteAnchor", String(t.deleteAnchor));
