@@ -11,6 +11,11 @@
 //      既存 image/file と同じ通常FormData経路で fd.append("mode","cover") して UPLOAD_SVC(proceed-upload-test) へ転送。
 //      ★GatewayでNotion File Upload APIは新設しない。カバー設定は proceed-upload-test 側の既存cover処理が担う。
 //   それ以外（既存ツール・既存ルート・Service Binding UPLOAD_SVC・/upload）は現行正本のまま不変。
+// 変更点（2026-06-25・★★のみ）:
+//   ★★ FILE_TYPES（mode=file の原本添付allowlist）をモジュール定数へ一本化。
+//      create_upload_ticket / handleUpload のローカル二重定義を撤去し、同一定数を参照（将来のズレ防止）。
+//      許可MIMEに Office系（docx/xlsx/pptx）を追加（従来は application/pdf のみ）。
+//      ※ image / thumb_ref / cover の allowlist・MAX_SIZE は不変。
 // 必須バインディング: KV UPLOAD_TICKETS / Service UPLOAD_SVC→proceed-upload-test /
 //                    Secret THUMBNAIL_TOKEN・UPLOAD_TOKEN / (任意)Var GATEWAY_UPLOAD_URL
 
@@ -21,6 +26,13 @@ import { z } from "zod";
 const UPLOAD_BASE = "https://proceed-upload-test.cloud-taku.workers.dev";
 const THUMB_BASE = "https://proceed-thumbnail.cloud-taku.workers.dev";
 const THUMB_REF_TYPES = ["image/png", "image/jpeg", "image/webp"]; // ★J: thumb_ref専用allowlist（共有IMAGE_TYPESと分離）
+// ★★ 原本ファイル添付（mode=file）の許可MIME。pdf＋Office系（docx/xlsx/pptx）。create_upload_ticket と handleUpload が共用。
+const FILE_TYPES = [
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",   // .docx
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",         // .xlsx
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation", // .pptx
+];
 
 // Define our MCP agent with tools
 export class MyMCP extends McpAgent {
@@ -530,7 +542,7 @@ export class MyMCP extends McpAgent {
         const j = (obj: any) => ({ content: [{ type: "text" as const, text: JSON.stringify(obj, null, 2) }] });
         if (!env.UPLOAD_TICKETS) return j({ ok: false, error: "KV UPLOAD_TICKETS not bound" });
         const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
-        const FILE_TYPES = ["application/pdf"];
+        // ★★ FILE_TYPES はモジュール定数を使用（pdf＋docx/xlsx/pptx）。ローカル二重定義は撤去。
         const m = mode ?? "image";
         const ct = (contentType || "").toLowerCase();
         if (m !== "image" && m !== "file" && m !== "thumb_ref" && m !== "cover") return j({ ok: false, reason: "mode_not_allowed" }); // ★cover許可
@@ -558,7 +570,7 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
   const j = (obj: any, status = 200) =>
     new Response(JSON.stringify(obj, null, 2), { status, headers: { "content-type": "application/json; charset=utf-8" } });
   const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
-  const FILE_TYPES = ["application/pdf"];
+  // ★★ FILE_TYPES はモジュール定数を使用（pdf＋docx/xlsx/pptx）。ローカル二重定義は撤去。
   const MAX_SIZE = 20 * 1024 * 1024;
   try {
     if (!env.UPLOAD_TICKETS) return j({ ok: false, error: "KV UPLOAD_TICKETS not bound" }, 500);
