@@ -1,6 +1,9 @@
 // remote-mcp-server-authless（D-1ゲートウェイ）src/index.ts
 // 9ツール版（add / calculate / probe_workers / generate_thumbnail / adopt_thumbnail /
 //            start_thumbnail_job / check_thumbnail_job / upload_cover / create_upload_ticket）＋ /upload
+// ★2026-06-28 §8: delete_block ツール追加（10ツール化）。UPLOAD_SVC 経由で proceed-upload-test の
+//   ?action=delete_block&blockId=... を代理実行し、Notion API DELETE /v1/blocks/{id} でブロック削除。
+//   gateway は NOTION_TOKEN 非保持のため、削除は upload-test 側（NOTION_TOKEN保持）で実行する分業。
 // 変更点（2026-06-20・★のみ）:
 //   ★ check_thumbnail_job の返却を R2短命URL方式へ更新。
 //      previewDataUrl（base64）は返さず、proceed-thumbnail が発行する previewUrl / size / contentType を素通し。
@@ -560,6 +563,32 @@ export class MyMCP extends McpAgent {
         await env.UPLOAD_TICKETS.put(ticketId, JSON.stringify(record), { expirationTtl: ttl });
         const uploadUrl = env.GATEWAY_UPLOAD_URL || "https://remote-mcp-server-authless.cloud-taku.workers.dev/upload";
         return j({ ok: true, uploadUrl, ticketId, expiresIn: ttl });
+      },
+    );
+
+    // --- delete_block（★2026-06-28 §8: 既存Notion画像ブロック等を削除・案Y） ---
+    // gateway は NOTION_TOKEN 非保持のため、UPLOAD_SVC(proceed-upload-test) を Service Binding 経由で
+    // 代理実行（公開fetchはfallback＝DO内fetchなので可だが1042回避でSB優先）。
+    // upload-test 側の ?action=delete_block&blockId=... が Notion API DELETE /v1/blocks/{id} を実行する。
+    this.server.registerTool(
+      "delete_block",
+      { inputSchema: { blockId: z.string() } },
+      async ({ blockId }) => {
+        const env = this.env as any;
+        const j = (obj: any) => ({ content: [{ type: "text" as const, text: JSON.stringify(obj, null, 2) }] });
+        if (!blockId) return j({ ok: false, error: "blockId required" });
+        try {
+          const u = UPLOAD_BASE + "/?action=delete_block&blockId=" + encodeURIComponent(blockId);
+          const req = new Request(u, { method: "POST", headers: { "X-UPLOAD-TOKEN": env.UPLOAD_TOKEN || "" } });
+          const res = env.UPLOAD_SVC ? await env.UPLOAD_SVC.fetch(req) : await fetch(req);
+          const data: any = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok !== true) {
+            return j({ ok: false, step: "delete_block", status: res.status, error: data.error || "delete failed", detail: data.body ?? data.step });
+          }
+          return j({ ok: true, blockId, archived: data.archived ?? true });
+        } catch (e) {
+          return j({ ok: false, error: String(e) });
+        }
       },
     );
   }
