@@ -553,8 +553,8 @@ export class MyMCP extends McpAgent {
         const m = mode ?? "image";
         const ct = (contentType || "").toLowerCase();
         if (m !== "image" && m !== "file" && m !== "thumb_ref" && m !== "cover") return j({ ok: false, reason: "mode_not_allowed" }); // ★cover許可
-        // ★案2-A: targetBlockId 指定時は既存ブロック更新なので pageId 不要。それ以外は従来通り。
-        if ((m === "image" || m === "file" || m === "cover") && !pageId && !targetBlockId) return j({ ok: false, reason: "pageId_required" });
+        // ★案2-A/B: targetBlockId/afterBlockId/parentId 指定時は pageId 不要。それ以外は従来通り。
+        if ((m === "image" || m === "file" || m === "cover") && !pageId && !targetBlockId && !afterBlockId && !parentId) return j({ ok: false, reason: "pageId_required" });
         const allowed = m === "file" ? FILE_TYPES : (m === "thumb_ref" ? THUMB_REF_TYPES : IMAGE_TYPES); // ★cover→else=IMAGE_TYPES(png/jpeg/webp)で画像許可
         if (!allowed.includes(ct)) return j({ ok: false, reason: "mode_content_type_mismatch" });
         const ticketId = crypto.randomUUID();
@@ -697,7 +697,8 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
     const up: any = await upRes.json().catch(() => ({}));
     if (!upRes.ok || up.ok !== true) {
       return j({ ok: false, step: "upload", status: upRes.status, error: up.error || "upload failed",
-        detail: up.step ? { step: up.step } : undefined }, 502);
+        upstreamStep: up.step ?? null, upstreamStatus: up.status ?? null, upstreamBody: up.body ?? null,
+        upstreamReason: up.reason ?? null }, 502);
     }
     return j({ ok: true, pageId: t.pageId, blockId: up.blockId ?? null,
       fileName: up.filename ?? t.fileName, size: up.size, attached: up.attached, placement: up.placement ?? null,
