@@ -538,9 +538,13 @@ export class MyMCP extends McpAgent {
           anchorText: z.string().optional(),
           deleteAnchor: z.boolean().optional(),
           headingText: z.string().optional(),
+          targetBlockId: z.string().optional(), // ★案2-A: 指定でupdate_image_block（同一blockIdの中身差し替え）
+          afterBlockId: z.string().optional(),  // ★案2-B: 指定でこのブロック直後にappend
+          parentId: z.string().optional(),      // ★案2-B: append先の親（省略時pageId）
+          caption: z.string().optional(),       // ★案2-B: caption再付与
         },
       },
-      async ({ fileName, contentType, pageId, mode, placement, anchorText, deleteAnchor, headingText }) => {
+      async ({ fileName, contentType, pageId, mode, placement, anchorText, deleteAnchor, headingText, targetBlockId, afterBlockId, parentId, caption }) => {
         const env = this.env as any;
         const j = (obj: any) => ({ content: [{ type: "text" as const, text: JSON.stringify(obj, null, 2) }] });
         if (!env.UPLOAD_TICKETS) return j({ ok: false, error: "KV UPLOAD_TICKETS not bound" });
@@ -549,7 +553,8 @@ export class MyMCP extends McpAgent {
         const m = mode ?? "image";
         const ct = (contentType || "").toLowerCase();
         if (m !== "image" && m !== "file" && m !== "thumb_ref" && m !== "cover") return j({ ok: false, reason: "mode_not_allowed" }); // ★cover許可
-        if ((m === "image" || m === "file" || m === "cover") && !pageId) return j({ ok: false, reason: "pageId_required" }); // ★cover: image/file/cover はpageId必須・thumb_refのみ不要
+        // ★案2-A: targetBlockId 指定時は既存ブロック更新なので pageId 不要。それ以外は従来通り。
+        if ((m === "image" || m === "file" || m === "cover") && !pageId && !targetBlockId) return j({ ok: false, reason: "pageId_required" });
         const allowed = m === "file" ? FILE_TYPES : (m === "thumb_ref" ? THUMB_REF_TYPES : IMAGE_TYPES); // ★cover→else=IMAGE_TYPES(png/jpeg/webp)で画像許可
         if (!allowed.includes(ct)) return j({ ok: false, reason: "mode_content_type_mismatch" });
         const ticketId = crypto.randomUUID();
@@ -558,6 +563,8 @@ export class MyMCP extends McpAgent {
           fileName, contentType: ct, pageId, mode: m,
           placement: placement ?? null, anchorText: anchorText ?? null,
           deleteAnchor: deleteAnchor ?? null, headingText: headingText ?? null,
+          targetBlockId: targetBlockId ?? null, afterBlockId: afterBlockId ?? null,
+          parentId: parentId ?? null, caption: caption ?? null,
           used: false, exp: Date.now() + ttl * 1000,
         };
         await env.UPLOAD_TICKETS.put(ticketId, JSON.stringify(record), { expirationTtl: ttl });
@@ -586,6 +593,29 @@ export class MyMCP extends McpAgent {
             return j({ ok: false, step: "delete_block", status: res.status, error: data.error || "delete failed", detail: data.body ?? data.step });
           }
           return j({ ok: true, blockId, archived: data.archived ?? true });
+        } catch (e) {
+          return j({ ok: false, error: String(e) });
+        }
+      },
+    );
+
+    // --- list_blocks（★案2: ページ内の画像ブロックを再帰収集・差し替え対象の特定用） ---
+    this.server.registerTool(
+      "list_blocks",
+      { inputSchema: { pageId: z.string() } },
+      async ({ pageId }) => {
+        const env = this.env as any;
+        const j = (obj: any) => ({ content: [{ type: "text" as const, text: JSON.stringify(obj, null, 2) }] });
+        if (!pageId) return j({ ok: false, error: "pageId required" });
+        try {
+          const u = UPLOAD_BASE + "/?action=list_blocks&pageId=" + encodeURIComponent(pageId);
+          const req = new Request(u, { method: "POST", headers: { "X-UPLOAD-TOKEN": env.UPLOAD_TOKEN || "" } });
+          const res = env.UPLOAD_SVC ? await env.UPLOAD_SVC.fetch(req) : await fetch(req);
+          const data: any = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok !== true) {
+            return j({ ok: false, step: "list_blocks", status: res.status, error: data.error || "list failed", detail: data.body ?? data.step });
+          }
+          return j(data);
         } catch (e) {
           return j({ ok: false, error: String(e) });
         }
@@ -657,6 +687,10 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
     if (t.anchorText) fd.append("anchorText", t.anchorText);
     if (t.deleteAnchor !== null && t.deleteAnchor !== undefined) fd.append("deleteAnchor", String(t.deleteAnchor));
     if (t.headingText) fd.append("headingText", t.headingText);
+    if (t.targetBlockId) fd.append("targetBlockId", t.targetBlockId); // ★案2-A
+    if (t.afterBlockId) fd.append("afterBlockId", t.afterBlockId);    // ★案2-B
+    if (t.parentId) fd.append("parentId", t.parentId);                // ★案2-B
+    if (t.caption) fd.append("caption", t.caption);                   // ★案2-B
     // Service Binding 経由（公開URL非経由・内部直結→1042回避）。無ければURL fetchフォールバック。
     const upReq = new Request(UPLOAD_BASE + "/", { method: "POST", headers: { "X-UPLOAD-TOKEN": env.UPLOAD_TOKEN || "" }, body: fd });
     const upRes = env.UPLOAD_SVC ? await env.UPLOAD_SVC.fetch(upReq) : await fetch(upReq);
@@ -666,7 +700,10 @@ async function handleUpload(request: Request, env: any): Promise<Response> {
         detail: up.step ? { step: up.step } : undefined }, 502);
     }
     return j({ ok: true, pageId: t.pageId, blockId: up.blockId ?? null,
-      fileName: up.filename ?? t.fileName, size: up.size, attached: up.attached, placement: up.placement ?? null });
+      fileName: up.filename ?? t.fileName, size: up.size, attached: up.attached, placement: up.placement ?? null,
+      action: up.action ?? null, targetBlockId: up.targetBlockId ?? null,
+      beforeObjectPath: up.beforeObjectPath ?? null, afterObjectPath: up.afterObjectPath ?? null, changed: up.changed ?? null,
+      file_upload_id: up.file_upload_id ?? null, parentId: up.parentId ?? null, afterBlockId: up.afterBlockId ?? null });
   } catch (e) {
     return j({ ok: false, error: String((e && (e as any).stack) || e) }, 500);
   }
